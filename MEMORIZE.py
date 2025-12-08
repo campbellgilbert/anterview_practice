@@ -43,8 +43,6 @@ while True:
 
 
 #MEMORY, PERSISTENT -- json file
-import anthropic
-import os
 import json
 
 client = anthropic.Anthropic()
@@ -72,6 +70,40 @@ with open("example.json", "r") as f:
     json.dump(conversation, f, indent=2)
 
 
+#STREAMING
+user_input = input()
+
+with client.beta.messages.stream(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    system="You are a friendly assistant.",
+    messages = [
+        {
+            "role": "user",
+            "content": user_input
+        }
+    ],
+    betas=["files-api-2025-04-14"],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+
+
+#spinner
+import itertools
+import threading
+import time
+
+def spinner():
+    for c in itertools.cycle(['|', '/', '-', '\\']):
+        if done:
+            break
+        print(f'\r{c} thinking...', end='', flush=True)
+        time.sleep(0.1)
+
+done = False
+t = threading.Thread(target=spinner)
+t.start()
 
 #file use
 
