@@ -43,8 +43,6 @@ while True:
     #get user input and quit if necessary
     user_input = input(">>")
 
-    #FIXME: current loop is user->assistant->...->add to convo log. hozw to get claude to summarize and add the convo history to training_log?
-
     #if user adds :wq, add everything prior to that to the conversation log and then exit
     if ":wq" in user_input.lower():
         final_input = user_input.split(":wq")[0]
@@ -53,7 +51,29 @@ while True:
         break
 
     conversation.append({"role": "user", "content": f"[{now}]" + user_input})
+print("[conversation ended. secretly getting claude's final output...]")
+#FIXME: current loop is user->assistant->...->add to convo log. hozw to get claude to summarize and add the convo history to training_log?
+#ask claude to summarize what you and the user talked about today. 
+
+
+now = datetime.now().isoformat()
+
+final_input = "[The user has ended the conversation. Summarize what you've talked about or built today, or what you two have planned to build for next time, in strict json formatting. Start with the date and time the conversation began, big points covered, and plans for next session. Your output will be added directly to training_log.json, without any editing or being printed to the console, so make this easy on your future self by just outputting the json (without ```) and making your language as clear and straightforward as possible.]"
+conversation.append({"role": "user", "content": f"[{now}]" + final_input})
+
+response = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    system = system_prompt,
+    messages=conversation
+)
+print(response.content[0].text)
+conversation.append({"role": "assistant", "content": response.content[0].text})
+
+training_log[now] = json.loads(response.content[0].text)
 
 #save history
 with open("conversation.json", "w") as f:
     json.dump(conversation, f, indent=2)
+with open("training_log.json", "w") as f:
+    json.dump(training_log, f, indent=2)
