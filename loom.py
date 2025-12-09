@@ -1,28 +1,60 @@
 #timed loom; built in ~2.5hrs
+#just kidding. it took closer to 4. my chungus life...
 """
 TODO:
 - multiple outputs per input to choose from
-- prettyprint branching structure
+- prettyprint branching structure (this is the type of bullshit i make claude do)
 - better db
-- should we add command messages to the loom history?
 """
 import anthropic
 import uuid
 import json
-import itertools
 import threading
-import time
+from rich.live import Live
+from rich.columns import Columns
+from rich.panel import Panel
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.text import Text
+from rich import box
+
+console = Console()
+
+SYSTEM_PROMPT = "You, Claude, are the arbiter of the multiversal loom, a mystical figure that can tell the reader psychedelic stories about all sorts of alternate realities! You are wearing a big swishy mysterious green cloak and have access to all the props you want -- books, a crystal ball, literal threads of fate, etc. You are not strictly bound to any particular form except the cloak, which could be concealing just about anything. The reader is accessing you via a command line; everything you say will be directly outputted, so don't bother with any formatting. Have fun!"
 
 """SETUP"""
 
 client = anthropic.Anthropic()
 
+# Welcome banner
+console.print(Panel(
+    Text("THE LOOM OF A THOUSAND FACES", justify="center", style="bold green"),
+    subtitle="[dim]a multiversal conversation engine[/dim]",
+    box=box.DOUBLE_EDGE,
+    border_style="green"
+))
+
+console.print(Panel(
+    "[bold]Commands:[/bold]\n"
+    "  [green]quit[/green]       - exit and save\n"
+    "  [green]reroll[/green]     - regenerate a message\n"
+    "  [green]printconvo[/green] - show current thread\n"
+    "  [green]printloom[/green]  - show all branches",
+    box=box.ROUNDED,
+    border_style="dim"
+))
+
+filename = Prompt.ask("[green]Memory file[/green]", default="loomversation.json")
+
 try:
-    
-    with open("loomversation.json", "r") as f:
+    with open(filename, "r") as f:
         loomversation = json.load(f)
-except:
-    print("CONVO NOT FOUND")
+    console.print(f"[dim]Loaded {len(loomversation)} messages from {filename}[/dim]")
+except FileNotFoundError:
+    console.print("[yellow]No existing conversation found. Starting fresh.[/yellow]")
+    loomversation = {}
+except json.JSONDecodeError:
+    console.print("[yellow]Conversation file corrupted/empty. Starting fresh.[/yellow]")
     loomversation = {}
     
 
@@ -53,7 +85,6 @@ def reconstruct_convo(start_id):
     #print the most recent in the conversation
     print("=-=-=-=-=-=-=-=-=")
     start = loomversation[start_id]
-
     print(f"{str(start["role"]).upper()} {start_id}:\n{start["content"]}")
 
     #return conversation (AND the parent id so we can add to the loom?)
@@ -64,26 +95,30 @@ def get_assistant_response(asst_msg_id, curr_convo):
     """if curr_convo[-1]["role"] == "assistant":
         print("Conversation ends on assistant turn.")
         return None"""
-    
-    #rint(f"assistant is responding to: {curr_convo}")
-    
-    print(f"{asst_msg_id} ASSISTANT:\n")
+        
+    console.print(f"\n[bold magenta]{asst_msg_id}[/bold magenta] [dim]ASSISTANT[/dim]")
     
     #no spinner, we stream like men
-    with client.messages.stream(
-        model="claude-sonnet-4-5",
-        max_tokens=1024,
-        system="You, Claude, are the arbiter of the multiversal loom, a mystical figure that can tell the reader stories about all sorts of alternate realities! You are wearing a big swishy mysterious green cloak and have access to all the props you want -- books, a crystal ball, literal threads of fate, etc. The reader is accessing you via a command line; everything you say will be directly outputted, so don't bother with any formatting. Have fun! (However, please try to keep your responses brief as I am currently testing the interface - 2sentences max. Thank you!)",
-        messages=curr_convo
-    ) as stream:
-        response = ""
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-            response += text
+    try:
+        with client.messages.stream(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=curr_convo
+        ) as stream:
+            response = ""
+            for text in stream.text_stream:
+                print(text, end="", flush=True)
+                response += text
+        response += "\n"
+    except KeyboardInterrupt:
+        print("[Interrupted -- saving partial response]")
+        if response:
+            response += " [interrupted]\n"
+        else:
+            response = ""
 
-    #print(f"{asst_msg_id}: {response.content[0].text}")
-
-    return response #response.content[0].text
+    return response 
 
 #helper function for recreating assistant and user messages
 def reroll_message(message_id):
@@ -100,13 +135,87 @@ def reroll_message(message_id):
     return changed_convo, parent_id
 
 
+def generate_multi_responses(n, curr_convo, system_prompt):
+    """Generate n responses side-by-side with streaming display."""
+    buffers = [""] * n
+    msg_ids = [str(uuid.uuid4())[:8] for _ in range(n)]
+    done = [False] * n
+    lock = threading.Lock()
 
-print("===WELCOME TO THE LOOM OF A THOUSAND FACES===\ntype a message to get a result. type a uuid to rewind to that message; type '/reroll' after an output to re-roll it. type '/quit' to quit.")
+    def stream_response(index):
+        nonlocal buffers, done
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=curr_convo
+            ) as stream:
+                for text in stream.text_stream:
+                    with lock:
+                        buffers[index] += text
+        except Exception as e:
+            with lock:
+                buffers[index] += f"\n[Error: {e}]"
+        finally:
+            with lock:
+                done[index] = True
+
+    # Start all threads
+    threads = []
+    for i in range(n):
+        t = threading.Thread(target=stream_response, args=(i,))
+        t.start()
+        threads.append(t)
+
+    # Live display
+    def make_panels():
+        panels = []
+        for i in range(n):
+            status = "" if done[i] else " [blink]▌[/blink]"
+            panels.append(Panel(
+                buffers[i] + status,
+                title=f"[bold magenta][{i+1}][/bold magenta] [dim]{msg_ids[i]}[/dim]",
+                width=console.width // n - 2,
+                border_style="magenta"
+            ))
+        return Columns(panels)
+
+    try:
+        with Live(make_panels(), refresh_per_second=10, console=console, transient=False) as live:
+            while not all(done):
+                live.update(make_panels())
+            # Final update inside Live context
+            live.update(make_panels())
+    except KeyboardInterrupt:
+        console.print("\n[interrupted]")
+
+    # Wait for threads
+    for t in threads:
+        t.join()
+
+    # Let user choose
+    choice = Prompt.ask(f"\n[green]Choose a response[/green] [dim](1-{n})[/dim]", default="1")
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < n:
+            console.print(f"[dim]Selected response {idx + 1}[/dim]")
+            return msg_ids[idx], buffers[idx]
+    except ValueError:
+        pass
+
+    # Default to first
+    console.print("[yellow]Invalid choice, using response 1[/yellow]")
+    return msg_ids[0], buffers[0]
+
 
 curr_convo = []
 parent_id = None
 
-start_id = input("Input 'uuid ' followed by a uuid (including the space!) to pick up the conversation from right after that message, or anything else to start a new chat.\n")
+start_id = Prompt.ask(
+    "\n[green]Resume from UUID?[/green] [dim](enter 'uuid <id>' or press Enter for new chat)[/dim]",
+    default=""
+)
 
 if start_id.startswith("uuid"):
     id = start_id.split(" ")[1]
@@ -134,6 +243,21 @@ if start_id.startswith("uuid"):
             print(f"UUID {start_id} not found. Starting from fresh chat...\n=-=-=-=-=-=-=-=-=")
             #start with assistant message. claude likes it, it's fun, we all have a good time
 
+num_outputs_input = Prompt.ask(
+    "[green]Parallel outputs[/green] [dim](1-3, shows side-by-side)[/dim]",
+    default="1"
+)
+try:
+    num_outputs = min(3, max(1, int(num_outputs_input)))
+except ValueError:
+    num_outputs = 1
+
+console.print(Panel(
+    f"[bold green]Ready![/bold green] Generating {num_outputs} output(s) per turn.",
+    box=box.ROUNDED,
+    border_style="green"
+))
+console.print()
 
 """
 =====MAIN CONVERSATIONAL LOOP=====
@@ -144,7 +268,8 @@ reconstruct_convo handles printing the most recent last message
 reroll_of_id_user=None
 while True:
     user_msg_id = str(uuid.uuid4())[:8]
-    inp = input(f"{user_msg_id} USER:\n>")
+    console.print(f"\n[bold cyan]{user_msg_id}[/bold cyan] [dim]USER[/dim]")
+    inp = Prompt.ask("[cyan]>[/cyan]")
     #parent_id = user_msg_id
     reroll_of_id_asst = None
 
@@ -160,11 +285,10 @@ while True:
         print(loomversation)
         print("--------------\n")
         continue
-
     elif inp == "reroll":
         #assistant: [...] > user: /reroll > assistant: [...]
         #parent ID of rerolled assistant message should be same as parent id of previous assistant message
-        message_id = input("UUID of message to change (assistant message will be re-generated, user message will be left blank to be re-written). If this field left blank, most recent message will be affected. UUID will be re-generated:\n>")
+        message_id = input("Input UUID of message to change. If left blank, most recent message will be affected.\nAssistant message will be re-generated, user message will be left blank for user rewrite.\n>")
 
         if message_id == "" or message_id == None:
             #we are rerolling the most recent assistant message
@@ -195,8 +319,11 @@ while True:
 
     #this goes for re-rolled assistant responses and the regular loop
     #create a new uuid, print assistant response, add that to the loom and the conversation
-    asst_msg_id = str(uuid.uuid4())[:8]
-    asst_response = get_assistant_response(asst_msg_id, curr_convo)
+    if num_outputs > 1:
+        asst_msg_id, asst_response = generate_multi_responses(num_outputs, curr_convo, SYSTEM_PROMPT)
+    else:
+        asst_msg_id = str(uuid.uuid4())[:8]
+        asst_response = get_assistant_response(asst_msg_id, curr_convo)
 
     asst_msg = add_message(asst_msg_id, "assistant", asst_response, user_msg_id, reroll_of_id_asst)
 
@@ -205,13 +332,10 @@ while True:
     parent_id = asst_msg_id
     reroll_of_id_user=None
 
-    #print(f"{asst_msg_id} ASSISTANT:\n{asst_response}")
-    #asstmsg = add_message(asst_msg_id, "assistant", asst_response, user_msg_id)
-    
 
 #conversation is over
 #save to memories
-with open("loomversation.json", "w") as f:
+with open(filename, "w") as f:
     json.dump(loomversation, f, indent=2)
 with open("conversation_loom_test.json", "w") as f:
     json.dump(curr_convo, f, indent=2)

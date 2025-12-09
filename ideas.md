@@ -42,7 +42,7 @@ tldr.py -- take in a filename, gives varying levels of length (short/medium/long
   validation, error recovery.
 
   4. Retry/backoff wrapper
-
+ 
   Build a robust API client that handles rate limits, transient errors, timeouts with exponential backoff. Tests: decorators, exception handling,
   timing.
 
